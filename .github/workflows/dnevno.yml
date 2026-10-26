@@ -1,0 +1,67 @@
+name: Dnevno azuriranje cijena
+on:
+  schedule:
+    - cron: "25 7 * * *"
+    - cron: "25 11 * * *"
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: azuriranje
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      publish: ${{ steps.build.outputs.publish }}
+    defaults:
+      run:
+        working-directory: src/cijene-zapresic
+    steps:
+      - uses: actions/checkout@v4
+      - name: Raspakiraj aplikaciju
+        working-directory: .
+        run: unzip -q cijene-zapresic.zip -d src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - uses: actions/cache/restore@v4
+        with:
+          path: src/cijene-zapresic/state
+          key: state-${{ github.run_id }}
+          restore-keys: state-
+      - name: Preuzmi sluzbene cjenike
+        id: build
+        run: |
+          set +e
+          python -m pipeline.build
+          code=$?
+          set -e
+          if [ $code -eq 0 ]; then echo "publish=true" >> $GITHUB_OUTPUT; else echo "publish=false" >> $GITHUB_OUTPUT; fi
+          python -m pipeline.report >> $GITHUB_STEP_SUMMARY || true
+          if [ $code -ne 0 ] && [ $code -ne 3 ]; then exit $code; fi
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: src/cijene-zapresic/state
+          key: state-${{ github.run_id }}
+      - uses: actions/configure-pages@v5
+        if: steps.build.outputs.publish == 'true'
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.build.outputs.publish == 'true'
+        with:
+          path: src/cijene-zapresic/docs
+  deploy:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
